@@ -1,3 +1,20 @@
+(* ------------------------------------------------------------------------------------------------ *)
+(* enable quotation and preprocessing																*)
+#require "camlp5";;
+#load "camlp5o.cma";;
+
+(* macro expansion evil... *)
+let quotexpander s =
+	if String.sub s 0 1 = "|" && String.sub s (String.length s-1) 1 = "|" then
+		"secondary_parser \""^
+		(String.escaped (String.sub s 1 (String.length s -2)))^"\""
+	else "default_parser \""^(String.escaped s)^"\"";;
+
+Quotation.add "" (Quotation.ExStr (fun x -> quotexpander));;
+	
+(* ------------------------------------------------------------------------------------------------ *)
+(* pretty printer library																			*)
+
 open Format
 (* ------------------------------------------------------------------------------------------------ *)
 (* helper list functions																			*)
@@ -296,9 +313,9 @@ let parse = make_parser
 
 (* test: parse "sqrt(1-cos^2(x+y))" *)
 
-(* let default_parser = parse
-	let secondary_parser = parset
-*)
+(* let default_parser = parse *)
+let default_parser = parse_prop_formula
+let secondary_parser = parset
 
 (* ------------------------------------------------------------------------------------------------ *)
 (* pretty printing *)
@@ -312,7 +329,7 @@ let bracket p n f x y =
 	(if p then print_string ")" else ())
 
 
-(* convention: opmitt the quantifiers symbol with repeated quantifiers								*)
+(* convention: omitt the quantifiers symbol with repeated quantifiers								*)
 let rec strip_quant fm =
 	match fm with
 	| Forall(x,(Forall(y,p) as yp)) | Exists(x,(Exists(y,p) as yp)) -> 
@@ -400,5 +417,12 @@ let print_atom prec (R(p,args)) =
 
 let print_fol_formula = print_qformula print_atom
 
-let print_propvar prec p = print_string(pname p)
-let print_prop_formula = print_qformula print_propvar
+let print_propvar prec p = print_string(pname p);;
+let print_prop_formula = print_qformula print_propvar;;
+
+
+#install_printer printert;;
+#install_printer print_prop_formula;;
+#install_printer print_fol_formula;;
+
+
