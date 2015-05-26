@@ -425,4 +425,5 @@ let print_prop_formula = print_qformula print_propvar;;
 #install_printer print_prop_formula;;
 #install_printer print_fol_formula;;
 
-
+(* ------------------------------------------------------------------------ *)
+(* propositional logic														*)
