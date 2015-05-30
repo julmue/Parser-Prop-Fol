@@ -1,9 +1,18 @@
 (* ------------------------------------------------------------------------------------------------ *)
+(* misc library functions *)
+#use "lib.ml";;
+
+(* ------------------------------------------------------------------------------------------------ *)
+(* pretty printer library																			*)
+open Format
+
+(* ------------------------------------------------------------------------------------------------ *)
 (* enable quotation and preprocessing																*)
 #require "camlp5";;
 #load "camlp5o.cma";;
 
 (* macro expansion evil... *)
+
 let quotexpander s =
 	if String.sub s 0 1 = "|" && String.sub s (String.length s-1) 1 = "|" then
 		"secondary_parser \""^
@@ -11,59 +20,6 @@ let quotexpander s =
 	else "default_parser \""^(String.escaped s)^"\"";;
 
 Quotation.add "" (Quotation.ExStr (fun x -> quotexpander));;
-	
-(* ------------------------------------------------------------------------------------------------ *)
-(* pretty printer library																			*)
-
-open Format
-(* ------------------------------------------------------------------------------------------------ *)
-(* helper list functions																			*)
-
-let length l =
-	let rec len k l =
-		match l with
-		| [] -> k
-		| _::t -> len (k+1) t
-	in len 0 l
-		
-let hd l =
-	match l with 
-	| h::t -> h
-	| _ -> failwith "hd"
-
-let tl l =
-	match l with
-	| h::t -> t
-	| _ -> failwith "tl"	(* why not []? *)
-
-let explode s =
-	let rec exap n l =
-		if n < 0 then l else
-		exap (n - 1) ((String.sub s n 1)::l) in
-	exap (String.length s -1) []
-
-let rec mem x l =
-	match l with
-	| [] -> false
-	| (h::t) -> Pervasives.compare x h = 0 || mem x t
-
-let rec forall p l =
-	match l with
-	| [] -> true
-	| h::t -> p(h) && forall p t
-
-let rec exists p l =
-	match l with
-	| [] -> false
-	| h::t -> p(h) || exists p t
-
-let rec do_list f l =
-	match l with
-	| [] -> ()
-	| x::t -> f x; do_list f t
-
-let rec el n l =
-	if n = 0 then hd l else el (n - 1) (tl l)
 
 (* ------------------------------------------------------------------------------------------------ *)
 (* ------------------------------------------------------------------------------------------------ *)
@@ -423,7 +379,170 @@ let print_prop_formula = print_qformula print_propvar;;
 
 #install_printer printert;;
 #install_printer print_prop_formula;;
-#install_printer print_fol_formula;;
+#install_printer print_fol_formula;; 
 
 (* ------------------------------------------------------------------------ *)
+(* ------------------------------------------------------------------------ *)
 (* propositional logic														*)
+
+(* propopositional logic is a modern variant of Boole's algebra of propositions *)
+(* reminder: all binary connectives are parse as right associative				*)
+
+(* syntax operations														*)
+let mk_and p q = And(p,q)
+and mk_or p q = Or(p,q)
+and mk_imp p q = Imp(p,q)
+and mk_iff p q = Iff(p,q)
+and mk_forall x p = Forall(x,p)
+and mk_exists x p = Exists(x,p)
+
+let dest_iff fm =
+	match fm with Iff(p,q) -> (p,q) | _ -> failwith "dest_iff"
+
+let dest_and fm =
+	match fm with And(p,q) -> (p,q) | _ -> failwith "dest_and"
+
+let rec conjuncts fm =
+	match fm with And(p,q) -> conjuncts p @ conjuncts q | _ -> [fm]
+
+let dest_or fm =
+	match fm with Or(p,q) -> (p,q) | _ -> failwith "dest_or"
+
+let rec disjuncts fm =
+	match fm with Or(p,q) -> disjuncts p @ disjuncts q | _ -> [fm]
+
+let dest_imp fm =
+	match fm with Imp(p,q) -> (p,q) | _ -> failwith "dest_imp"
+
+let antecedent fm = fst(dest_imp fm)
+let consequent fm = snd(dest_imp fm)
+
+
+(* apply a function to all the atoms of a formula *)
+(* this is _not_ ('a)formula as a Functor, because the result of the fn application is not wrappend in an Atom *)
+let rec onatoms f fm =
+	match fm with
+	  Atom x -> f x				(* strangely this does not get wrapped in an "Atom" again *)
+	| Not(p) -> Not(onatoms f p)
+	| And(p,q) -> And(onatoms f p, onatoms f q)
+	| Or(p,q) -> Or(onatoms f p, onatoms f q)
+	| Imp(p,q) -> Imp(onatoms f p, onatoms f q)
+	| Iff(p,q) -> Iff(onatoms f p, onatoms f q)
+	| Forall(x,p) -> Forall(x, onatoms f p)
+	| Exists(x,p) -> Exists(x, onatoms f p)
+	| _ -> fm
+
+
+(* iterate a binary function over all the atoms of a formula *)
+let rec overatoms f fm b =
+	match fm with 
+	  Atom(a) -> f a b
+	| Not(p) -> overatoms f p b
+	| And(p,q) | Or(p,q) | Imp(p,q) |Iff(p,q) ->
+		overatoms f p (overatoms f q b)
+	| Forall(x,p) | Exists(x,p) -> overatoms f p b
+	| _ -> b
+
+let atom_union f fm = setify (overatoms (fun h t -> f(h)@t) fm [])
+
+let atoms fm = atom_union (fun a -> [a]) fm
+
+(* semantics of propositional logic *)
+(* semantics of prop are extensional (principle of composition) *)
+
+let rec eval fm v =
+	match fm with
+	  False -> false
+	| True -> true
+	| Atom(x) -> v(x)
+	| Not(p) -> not(eval p v)
+	| And(p,q) -> (eval p v) && (eval q v)
+	| Or(p,q) -> (eval p v) || (eval q v)
+	| Imp(p,q) -> not(eval p v) || (eval q v)
+	| Iff(p,q) -> (eval p v) = (eval q v)
+	| _ -> failwith "eval"
+
+(* mechanizing truth tables *)
+(* the final truth-value is competely determined by all 2^n choices for the assignment of the n atoms *)
+
+(* tests whether a function "subfn" returns true on all possible valuations of the atoms ats
+	using an existing valuation v for all other atoms *)
+let rec onallvaluations subfn v ats =
+	match ats with
+	  [] -> subfn v
+	| p::ps -> 
+		(* v' : 'a -> bool 
+		this overrides the default assignment function:
+		you assign a new truth value for a specific var *)
+		let v' t q = if q = p then t else v(q) in
+		onallvaluations subfn (v' false) ps &&
+		onallvaluations subfn (v' true) ps
+
+let print_truthtable fm =
+	let ats = atoms fm in
+	(* get maximum length of atom names vs "false" then increment by 1 *)
+	let width = itlist (max ** String.length ** pname) ats 5 + 1 in
+	(* calculate padding *)
+	let fixw s = s^String.make(width - String.length s) ' ' in
+	(* truth values for the columns *)
+	let truthstring p = fixw (if p then "true" else "false") in
+	let mk_row v =
+		(* collects the results of evaluation of atoms under a assgFN *)
+		let lis = map (fun x -> truthstring(v x)) ats
+		(* the truth value of the whole formula *)
+		and ans = truthstring(eval fm v) in
+		(* and prints the results of the atoms after being concatenated with the results of the formula *)
+		print_string(itlist (^) lis ("| "^ans)); print_newline(); 
+		true (* return value of ans *) 
+	in	
+	(* 9 for the length of " | formula" *)
+	let separator = String.make (width * length ats + 9) '-' in
+	(* print the header, collection all the atom names *)
+	print_string(itlist (fun s t -> fixw(pname s) ^ t) ats "| formula");
+	print_newline(); print_string separator; print_newline();
+	let _ = onallvaluations mk_row (fun _ -> false) ats in
+			(*						|------------|- default assignment function *)
+	print_string separator; print_newline();;
+
+(* Formal and natural language
+
+Propositional logic gives us a formal way to express some of the complex propositions 
+that can be stated in a natural language.
+
+the translation process from natural to formal languages is not easy and often ambiguous.
+
+it is not possible to express causality in propositional logic (verify!!!)
+nor temporality (verify!!)
+
+material conditional p => q can not be interpreted causational.
+informally often thougt of implicitly quantified: "~a || b" under any circumstances (at all times).
+*)
+		
+(* validity, satisfiability and tautology *)
+(*	a valuation v satisfies a formula (is model of a formula p) if "eval p v = true".
+	a formula is
+	* a tautology or logically valid if it is satisfied by all valuations
+	* satisfiable if it has at least one model
+	* unsatisfiable if it has no models
+
+A tautology is exactly analogous to an algebraic equation like x^2-y^2=(x+y)(x-y) 
+that is universally true whatever the values of the constituent variables.
+
+A satisfiable formula is exactly analogous to an equation that has at least one solution
+but may not be universally valid, e.g. x^2+2=3x.
+
+A contradiction is analogous to an unsolvable formula, e.g. 0*x=1.
+*)
+
+let tautology fm =
+	onallvaluations (eval fm) (fun s -> false) (atoms fm)
+
+let contradicion fm =
+	tautology (Not fm)
+
+let satisfiable =
+	not ** contradicion
+
+
+(* substitution *)
+let psubst subfn = onatoms (fun p -> tryapplyd subfn p (Atom p))
